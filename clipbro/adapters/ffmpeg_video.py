@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -10,6 +12,26 @@ from clipbro.core.errors import MediaError
 from clipbro.core.types import FrameBatch, TimeRange
 
 from ._ffmpeg import probe_streams, run_binary
+
+
+def probe_duration(media: Path, ffprobe: str = "ffprobe", timeout: float = 30.0) -> float:
+    """Return the container duration of media in seconds.
+
+    Raises MediaError when ffprobe fails or reports no usable positive duration.
+    """
+    args = [ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "json", str(media)]
+    completed = run_binary(args, timeout)
+    try:
+        payload = json.loads(completed.stdout.decode("utf-8", errors="replace") or "{}")
+    except json.JSONDecodeError as error:
+        raise MediaError(f"ffprobe returned invalid JSON for {media}") from error
+    try:
+        duration = float(payload["format"]["duration"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise MediaError(f"no duration reported for {media}") from error
+    if not math.isfinite(duration) or duration <= 0:
+        raise MediaError(f"invalid duration {duration!r} for {media}")
+    return duration
 
 
 def sampled_height(source_w: int, source_h: int, width: int) -> int:
