@@ -58,18 +58,28 @@ def make_clip(
     return path
 
 
+def moving_lum_expr(x_expr: str, y0: int, size: int) -> str:
+    """geq luma expression drawing a white size x size box whose left edge is x_expr (seconds as T) at row y0.
+
+    drawbox cannot use the timestamp in its expressions (its 't' is the thickness option), so the
+    moving boxes are drawn with geq, which exposes the time as T.
+    """
+    inside = f"between(X,{x_expr},{x_expr}+{size})*between(Y,{y0},{y0 + size})"
+    return f"if({inside},255,p(X,Y))"
+
+
 def moving_box_clip(directory: Path) -> Path:
-    """6 s clip: a white 80x80 box sliding right, plus a static high-contrast HUD in the top-left."""
+    """6 s clip: a white 80x80 box sliding right (x = 40 + 80 T), plus a static high-contrast HUD in the top-left."""
+    box = moving_lum_expr("40+80*T", 140, 80)
     hud = (
         "drawbox=x=0:y=0:w=120:h=60:color=white:t=2,"
         "drawbox=x=8:y=8:w=40:h=20:color=white:t=fill,"
         "drawbox=x=64:y=32:w=48:h=20:color=white:t=fill"
     )
-    box = "drawbox=x='40+t*80':y=140:w=80:h=80:color=white:t=fill"
     return make_clip(
         Path(directory) / "moving_box.mp4",
         duration=6.0,
-        video_filter=f"{hud},{box}",
+        video_filter=f"geq=lum='{box}':cb=128:cr=128,{hud}",
         audio=None,
     )
 
@@ -91,8 +101,9 @@ def flash_boom_clip(directory: Path) -> Path:
 
 def dead_air_clip(directory: Path) -> Path:
     """7 s clip: moving box and tone 0-2 s, frozen frame and silence 2-5 s, moving again 5-7 s."""
-    box_x = "if(lt(t,2),40+t*80,if(lt(t,5),200,40+(t-3)*80))"
-    video = f"drawbox=x='{box_x}':y=140:w=80:h=80:color=white:t=fill"
+    box_x = "if(lt(T,2),40+80*T,if(lt(T,5),200,40+80*(T-3)))"
+    box = moving_lum_expr(box_x, 140, 80)
+    video = f"geq=lum='{box}':cb=128:cr=128"
     audio = "aevalsrc=exprs='if(between(t,0,2)+between(t,5,7),0.3,0)*sin(2*PI*330*t)':s=16000:d=7"
     return make_clip(
         Path(directory) / "dead_air.mp4",

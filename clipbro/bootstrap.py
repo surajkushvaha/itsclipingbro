@@ -46,7 +46,7 @@ def _build_faces(enabled: bool) -> FaceDetector | None:
         return None
     model = default_model_path()
     if not model.is_file():
-        logger.warning("YuNet model not found at %s; face channel will be empty", model)
+        logger.warning("YuNet model not found at %s, face channel will be empty", model)
         return None
     return YuNetFaceDetector(model)
 
@@ -59,7 +59,7 @@ def build_analyzer(
 ) -> MotionAnalyzer:
     """Wire FFmpeg, YuNet, lexicon and JSON cache adapters into a MotionAnalyzer.
 
-    An explicit config wins over profile; with neither, MotionConfig() defaults apply.
+    An explicit config wins over the profile, and with neither the MotionConfig() defaults apply.
     Cache files live in data_dir / "motion".
     """
     resolved = _resolve_config(config, profile)
