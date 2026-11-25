@@ -120,6 +120,13 @@ class MotionPipelineTest(unittest.TestCase):
         self.assertEqual(len(booms), 1, f"boom events: {booms}")
         self.assertLessEqual(abs(booms[0]["t"] - BOOM_TIME), EVENT_TOLERANCE, f"boom at {booms[0]['t']}")
 
+    def test_flash_boom_has_no_hard_cut_at_the_flash(self) -> None:
+        """The flash at 2.0 s is a flash, not an edit: no hard_cut lies within 0.2 s of it."""
+        payload = self._analyze(self.flash, 6.0)
+        cuts = events_of(payload, "hard_cut")
+        near = [event for event in cuts if abs(event["t"] - BOOM_TIME) <= EVENT_TOLERANCE]
+        self.assertEqual(near, [], f"hard_cut events at the flash: {cuts}")
+
     def test_dead_air_yields_one_event_near_the_freeze(self) -> None:
         """A silent, static 3 s span yields exactly one dead_air event near where it starts."""
         payload = self._analyze(self.dead_air, 7.0)

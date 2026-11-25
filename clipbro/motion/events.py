@@ -54,6 +54,11 @@ def locate_in(ctx: AnalysisContext, channel_name: str, t: float) -> tuple[float,
     return peak_location(cells, saliency.grid)
 
 
+def hud_mask(ctx: AnalysisContext) -> np.ndarray:
+    """Bool [rows, cols] mask of the static HUD cells of the analysed range."""
+    return _require_saliency(ctx).hud
+
+
 def hud_free(ctx: AnalysisContext, channel_name: str) -> np.ndarray:
     """A channel as float32 [N, rows, cols] with HUD cells set to zero (computed once per run)."""
     saliency = _require_saliency(ctx)

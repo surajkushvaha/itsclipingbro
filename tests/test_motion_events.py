@@ -114,6 +114,15 @@ def boom_scene() -> tuple[np.ndarray, AudioTrack]:
     return frames, AudioTrack(samples=samples.astype(np.float32), sr=SR, start=0.0)
 
 
+def flash_with_object_scene() -> tuple[np.ndarray, AudioTrack]:
+    """boom_scene plus a bright 24 px square sliding along the bottom, away from the top-left corner."""
+    frames, audio = boom_scene()
+    for index in range(frames.shape[0]):
+        x0 = 40 + 2 * index
+        frames[index, 112:136, x0 : x0 + 24] = 255
+    return frames, audio
+
+
 def dead_air_scene() -> tuple[np.ndarray, AudioTrack]:
     """7 s at 6 fps: moving square and tone 0-2 s, static square and silence 2-5 s, moving with tone 5-7 s."""
     count = 42
@@ -202,6 +211,19 @@ class TestBoom(unittest.TestCase):
         self.assertIn("flash", booms[0].reason)
         assert_valid_events(self, found)
 
+    def test_full_frame_flash_is_located_by_saliency_not_top_left(self) -> None:
+        """A uniform full-frame flash must not default to the top-left cell; the saliency peak places the boom."""
+        frames, audio = flash_with_object_scene()
+        found = run_pipeline(make_context(frames, audio=audio), ["boom"])
+        booms = of_kind(found, "boom")
+        self.assertEqual(len(booms), 1, booms)
+        first_cell = 1 / 16
+        self.assertFalse(
+            abs(booms[0].x - first_cell) < 1e-6 and abs(booms[0].y - first_cell) < 1e-6,
+            f"boom placed on the top-left cell: {booms[0]}",
+        )
+        assert_valid_events(self, found)
+
     def test_flash_without_audio_burst_is_not_a_boom(self) -> None:
         """The same flash over a quiet bed with no onset produces no boom."""
         frames, audio = boom_scene()
@@ -253,6 +275,18 @@ class TestHardCut(unittest.TestCase):
         self.assertEqual([event.t for event in found], [1.0, 2.5])
         self.assertTrue(all(event.strength == 1.0 for event in found))
         assert_valid_events(self, found)
+
+
+    def test_cut_on_a_flash_is_dropped(self) -> None:
+        """A cut at the same moment as a full-frame flash is a flash, not an edit, so no hard_cut is emitted."""
+        frames, _ = boom_scene()
+        found = run_pipeline(make_context(frames, cuts=[2.0]), ["hard_cut"])
+        self.assertEqual(of_kind(found, "hard_cut"), [])
+
+    def test_same_cut_without_flash_is_kept(self) -> None:
+        """The same cut over unflashed frames gives exactly one hard_cut at 2.0 s."""
+        found = run_pipeline(make_context(noisy_dark_frames(36), cuts=[2.0]), ["hard_cut"])
+        self.assertEqual([event.t for event in found], [2.0])
 
 
 class TestScream(unittest.TestCase):
