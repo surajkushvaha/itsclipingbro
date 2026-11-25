@@ -9,7 +9,7 @@ from clipbro.core.context import AnalysisContext
 from clipbro.core.registry import register
 from clipbro.motion.audio_features import loud_jumps
 from clipbro.motion.channels.hud import hud_mask
-from clipbro.motion.grid import cell_mean, to_gray
+from clipbro.motion.grid import cell_mean, stats_frames, stats_gray
 
 DEFAULTS: dict[str, float] = {
     "sat_drop": 0.25,
@@ -98,10 +98,9 @@ class SmokeChannel:
         count = ctx.frames.n
         if count < 2:
             return np.zeros((count, rows, cols), dtype=np.float32)
-        gray = ctx.memo("gray", lambda: to_gray(ctx.frames.frames))
         thresholds = {key: ctx.threshold("smoke", key, value) for key, value in DEFAULTS.items()}
         window = max(1, int(round(ctx.frames.fps)))
-        saturation, sharpness, luminance = _cell_stats(ctx.frames.frames, gray, ctx.grid)
+        saturation, sharpness, luminance = _cell_stats(stats_frames(ctx), stats_gray(ctx), ctx.grid)
         scores = _smoke_scores(saturation, sharpness, luminance, window, thresholds)
         flash = ctx.channels.get("flash", np.zeros((count, rows, cols), dtype=np.float32))
         non_hud = ~hud_mask(ctx)

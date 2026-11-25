@@ -6,7 +6,7 @@ import numpy as np
 
 from clipbro.core.context import AnalysisContext
 from clipbro.core.registry import register
-from clipbro.motion.grid import cell_mean, to_gray
+from clipbro.motion.grid import cell_mean, stats_frames, stats_gray
 
 DEFAULTS: dict[str, float] = {"lum_jump": 35.0, "return_frames": 3.0, "orange_jump": 0.12}
 
@@ -61,9 +61,8 @@ class FlashChannel:
         count = ctx.frames.n
         if count < 2:
             return np.zeros((count, rows, cols), dtype=np.float32)
-        gray = ctx.memo("gray", lambda: to_gray(ctx.frames.frames))
-        luminance = cell_mean(gray.astype(np.float32), ctx.grid)
-        orange = _orange_fraction_cells(ctx.frames.frames, ctx.grid)
+        luminance = cell_mean(stats_gray(ctx).astype(np.float32), ctx.grid)
+        orange = _orange_fraction_cells(stats_frames(ctx), ctx.grid)
         lum_jump = ctx.threshold("flash", "lum_jump", DEFAULTS["lum_jump"])
         horizon = int(round(ctx.threshold("flash", "return_frames", DEFAULTS["return_frames"])))
         orange_jump = ctx.threshold("flash", "orange_jump", DEFAULTS["orange_jump"])

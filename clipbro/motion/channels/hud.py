@@ -7,7 +7,7 @@ import numpy as np
 
 from clipbro.core.context import AnalysisContext
 from clipbro.core.registry import register
-from clipbro.motion.grid import cell_mean, to_gray
+from clipbro.motion.grid import cell_mean, stats_gray
 
 DEFAULTS: dict[str, float] = {"std_max": 4.0, "edge_min": 0.06, "min_frames": 6}
 
@@ -29,7 +29,7 @@ def _edge_fraction_cells(gray: np.ndarray, grid: tuple[int, int]) -> np.ndarray:
 
 def _compute_mask(ctx: AnalysisContext) -> np.ndarray:
     """Build the bool [rows, cols] HUD mask; all False when there are too few frames."""
-    gray = ctx.memo("gray", lambda: to_gray(ctx.frames.frames))
+    gray = stats_gray(ctx)
     rows, cols = ctx.grid
     min_frames = ctx.threshold("hud", "min_frames", DEFAULTS["min_frames"])
     if gray.shape[0] < max(2.0, min_frames):

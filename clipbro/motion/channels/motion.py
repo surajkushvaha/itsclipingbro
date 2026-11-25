@@ -8,7 +8,7 @@ import numpy as np
 from clipbro.core.context import AnalysisContext
 from clipbro.core.registry import register
 from clipbro.motion.channels.hud import hud_mask
-from clipbro.motion.grid import cell_reduce, to_gray
+from clipbro.motion.grid import cell_slices, to_gray
 
 DEFAULTS: dict[str, float] = {"scale_px": 2.0, "cut_diff": 38.0, "flow_scale": 0.5}
 
@@ -21,9 +21,38 @@ def _flow_magnitude(prev: np.ndarray, nxt: np.ndarray) -> np.ndarray:
     return np.hypot(flow[..., 0], flow[..., 1])
 
 
-def _cell_p90(magnitude: np.ndarray, grid: tuple[int, int]) -> np.ndarray:
-    """Per-cell 90th percentile of a magnitude map."""
-    return cell_reduce(magnitude, grid, lambda block: float(np.percentile(block, 90)))
+def _p90_plan(shape_hw: tuple[int, int], grid: tuple[int, int]) -> tuple[np.ndarray, list[tuple[int, int]]]:
+    """Return flat pixel indices grouped cell by cell, and the (start, stop) span of each cell."""
+    height, width = shape_hw
+    index_grid = np.arange(height * width).reshape(height, width)
+    parts: list[np.ndarray] = []
+    spans: list[tuple[int, int]] = []
+    start = 0
+    for row in cell_slices(shape_hw, grid):
+        for ys, xs in row:
+            block = index_grid[ys, xs].ravel()
+            parts.append(block)
+            spans.append((start, start + block.size))
+            start += block.size
+    return np.concatenate(parts), spans
+
+
+def _segment_p90(values: np.ndarray) -> float:
+    """90th percentile with linear interpolation, matching np.percentile, via partition."""
+    count = values.size
+    position = 0.9 * (count - 1)
+    low = int(position)
+    high = min(low + 1, count - 1)
+    part = np.partition(values, (low, high))
+    return float(part[low] + (position - low) * (part[high] - part[low]))
+
+
+def _cell_p90(magnitude: np.ndarray, plan: tuple[np.ndarray, list[tuple[int, int]]], grid: tuple[int, int]) -> np.ndarray:
+    """Per-cell 90th percentile of a magnitude map, using a precomputed cell-major pixel plan."""
+    order, spans = plan
+    values = magnitude.ravel()[order]
+    out = np.array([_segment_p90(values[start:stop]) for start, stop in spans], dtype=np.float64)
+    return out.reshape(grid)
 
 
 def _is_cut(
@@ -66,12 +95,13 @@ def _flow_cells(
     so they stay in sampled-frame pixels. Cut detection uses the full-resolution `gray`.
     """
     count = gray.shape[0]
+    plan = _p90_plan(small.shape[1:3], grid)
     out = np.zeros((count, grid[0], grid[1]), dtype=np.float64)
     for index in range(1, count):
         if _is_cut(index, gray, times, cut_times, cut_diff):
             continue
         magnitude = _flow_magnitude(small[index - 1], small[index]) / flow_scale
-        out[index] = _cell_p90(magnitude, grid) / scale
+        out[index] = _cell_p90(magnitude, plan, grid) / scale
     out[0] = out[1]
     return out
 

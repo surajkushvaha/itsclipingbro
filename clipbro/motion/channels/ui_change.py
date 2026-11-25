@@ -7,7 +7,7 @@ import numpy as np
 from clipbro.core.context import AnalysisContext
 from clipbro.core.registry import register
 from clipbro.motion.channels.hud import hud_mask
-from clipbro.motion.grid import cell_mean, to_gray
+from clipbro.motion.grid import cell_mean, stats_gray
 
 DEFAULTS: dict[str, float] = {"scale": 30.0}
 
@@ -26,9 +26,10 @@ class UiChangeChannel:
         out = np.zeros((count, rows, cols), dtype=np.float32)
         if count < 2:
             return out
-        gray = ctx.memo("gray", lambda: to_gray(ctx.frames.frames))
+        gray = stats_gray(ctx)
         scale = max(ctx.threshold("ui_change", "scale", DEFAULTS["scale"]), 1e-6)
-        diffs = np.abs(gray[1:].astype(np.float32) - gray[:-1].astype(np.float32))
+        later, earlier = gray[1:], gray[:-1]
+        diffs = np.maximum(later, earlier) - np.minimum(later, earlier)
         out[1:] = cell_mean(diffs, ctx.grid) / scale
         out = np.where(hud_mask(ctx)[None, :, :], out, 0.0)
         return np.clip(out, 0.0, 1.0).astype(np.float32)

@@ -10,6 +10,8 @@ from typing import Callable
 import cv2
 import numpy as np
 
+from clipbro.core.context import AnalysisContext
+
 
 def _edges(length: int, parts: int) -> np.ndarray:
     """Return parts + 1 integer edges that split 0..length into near-equal spans."""
@@ -90,3 +92,27 @@ def to_gray(frames: np.ndarray) -> np.ndarray:
     for index, frame in enumerate(frames):
         gray[index] = cv2.cvtColor(np.ascontiguousarray(frame), cv2.COLOR_RGB2GRAY)
     return gray
+
+
+STATS_SCALE = 0.5
+
+
+def _downscale_rgb(frames: np.ndarray, scale: float) -> np.ndarray:
+    """Area-resize RGB uint8 frames [N, H, W, 3] by scale, returning uint8 [N, h, w, 3]."""
+    count, height, width = frames.shape[0], frames.shape[1], frames.shape[2]
+    out_h = max(1, int(round(height * scale)))
+    out_w = max(1, int(round(width * scale)))
+    out = np.empty((count, out_h, out_w, 3), dtype=np.uint8)
+    for index, frame in enumerate(frames):
+        out[index] = cv2.resize(np.ascontiguousarray(frame), (out_w, out_h), interpolation=cv2.INTER_AREA)
+    return out
+
+
+def stats_frames(ctx: AnalysisContext) -> np.ndarray:
+    """Return RGB uint8 frames at STATS_SCALE for per-cell statistics, computed once per run."""
+    return ctx.memo("stats_rgb", lambda: _downscale_rgb(ctx.frames.frames, STATS_SCALE))
+
+
+def stats_gray(ctx: AnalysisContext) -> np.ndarray:
+    """Return luma uint8 frames at STATS_SCALE, computed once per run."""
+    return ctx.memo("stats_gray", lambda: to_gray(stats_frames(ctx)))
