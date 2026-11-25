@@ -15,9 +15,13 @@ DEFAULTS: dict[str, float] = {"scale_px": 2.0, "cut_diff": 38.0, "flow_scale": 0
 REFERENCE_WIDTH = 160
 
 
-def _flow_magnitude(prev: np.ndarray, nxt: np.ndarray) -> np.ndarray:
-    """Return the per-pixel Farneback flow magnitude between two gray frames."""
-    flow = cv2.calcOpticalFlowFarneback(prev, nxt, None, 0.5, 3, 15, 3, 5, 1.2, 0)
+def _flow_magnitude(current: np.ndarray, previous: np.ndarray) -> np.ndarray:
+    """Return the per-pixel Farneback flow magnitude, defined on the CURRENT frame's pixels.
+
+    Flow is computed backwards (current -> previous) so a moving object lights up where it
+    is now, not where it was. Forward flow would be defined on the previous frame's pixels.
+    """
+    flow = cv2.calcOpticalFlowFarneback(current, previous, None, 0.5, 3, 15, 3, 5, 1.2, 0)
     return np.hypot(flow[..., 0], flow[..., 1])
 
 
@@ -100,7 +104,7 @@ def _flow_cells(
     for index in range(1, count):
         if _is_cut(index, gray, times, cut_times, cut_diff):
             continue
-        magnitude = _flow_magnitude(small[index - 1], small[index]) / flow_scale
+        magnitude = _flow_magnitude(small[index], small[index - 1]) / flow_scale
         out[index] = _cell_p90(magnitude, plan, grid) / scale
     out[0] = out[1]
     return out
