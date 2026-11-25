@@ -8,6 +8,7 @@ import numpy as np
 from clipbro.core.context import AnalysisContext
 from clipbro.core.registry import register
 from clipbro.motion.audio_features import loud_jumps
+from clipbro.motion.channels.hud import hud_mask
 from clipbro.motion.grid import cell_mean, to_gray
 
 DEFAULTS: dict[str, float] = {
@@ -103,7 +104,8 @@ class SmokeChannel:
         saturation, sharpness, luminance = _cell_stats(ctx.frames.frames, gray, ctx.grid)
         scores = _smoke_scores(saturation, sharpness, luminance, window, thresholds)
         flash = ctx.channels.get("flash", np.zeros((count, rows, cols), dtype=np.float32))
-        flash_max = flash.reshape(count, -1).max(axis=1)
+        non_hud = ~hud_mask(ctx)
+        flash_max = np.where(non_hud[None, :, :], flash, 0.0).reshape(count, -1).max(axis=1)
         gate = _gate_open(
             ctx.frames.times,
             flash_max,

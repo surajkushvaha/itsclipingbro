@@ -10,7 +10,7 @@ from clipbro.core.registry import register
 from clipbro.motion.channels.hud import hud_mask
 from clipbro.motion.grid import cell_reduce, to_gray
 
-DEFAULTS: dict[str, float] = {"scale_px": 2.0, "cut_diff": 38.0}
+DEFAULTS: dict[str, float] = {"scale_px": 2.0, "cut_diff": 38.0, "flow_scale": 0.5}
 
 REFERENCE_WIDTH = 160
 
@@ -43,21 +43,35 @@ def _is_cut(
     return bool(np.any((cut_times > lo) & (cut_times <= hi)))
 
 
+def _downscale(gray: np.ndarray, flow_scale: float) -> np.ndarray:
+    """Resize every gray frame by flow_scale with area averaging, for cheaper optical flow."""
+    return np.stack(
+        [cv2.resize(frame, None, fx=flow_scale, fy=flow_scale, interpolation=cv2.INTER_AREA) for frame in gray]
+    )
+
+
 def _flow_cells(
     gray: np.ndarray,
+    small: np.ndarray,
     times: np.ndarray,
     cut_times: np.ndarray,
     grid: tuple[int, int],
     scale: float,
     cut_diff: float,
+    flow_scale: float,
 ) -> np.ndarray:
-    """Return unclipped per-cell flow for every frame; frame 0 copies frame 1, cuts give 0."""
+    """Return unclipped per-cell flow for every frame; frame 0 copies frame 1, cuts give 0.
+
+    Flow is computed on the downscaled frames `small`; magnitudes are divided by flow_scale
+    so they stay in sampled-frame pixels. Cut detection uses the full-resolution `gray`.
+    """
     count = gray.shape[0]
     out = np.zeros((count, grid[0], grid[1]), dtype=np.float64)
     for index in range(1, count):
         if _is_cut(index, gray, times, cut_times, cut_diff):
             continue
-        out[index] = _cell_p90(_flow_magnitude(gray[index - 1], gray[index]), grid) / scale
+        magnitude = _flow_magnitude(small[index - 1], small[index]) / flow_scale
+        out[index] = _cell_p90(magnitude, grid) / scale
     out[0] = out[1]
     return out
 
@@ -81,6 +95,10 @@ class MotionChannel:
         )
         cut_diff = ctx.threshold("motion", "cut_diff", DEFAULTS["cut_diff"])
         cut_times = np.asarray(ctx.cuts, dtype=np.float64)
-        flow = _flow_cells(gray, ctx.frames.times, cut_times, ctx.grid, max(scale, 1e-6), cut_diff)
+        flow_scale = min(max(ctx.threshold("motion", "flow_scale", DEFAULTS["flow_scale"]), 1e-3), 1.0)
+        small = _downscale(gray, flow_scale)
+        flow = _flow_cells(
+            gray, small, ctx.frames.times, cut_times, ctx.grid, max(scale, 1e-6), cut_diff, flow_scale
+        )
         flow = np.where(hud_mask(ctx)[None, :, :], 0.0, flow)
         return np.clip(flow, 0.0, 1.0).astype(np.float32)

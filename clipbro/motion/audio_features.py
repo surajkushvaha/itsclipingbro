@@ -1,14 +1,13 @@
-"""Pure numpy features on AudioTrack: short-hop RMS, band energy ratio and loud jumps."""
+"""Pure numpy features on AudioTrack: short-hop RMS, band energy ratio and loud onsets."""
 
 from __future__ import annotations
-
-import bisect
 
 import numpy as np
 
 from clipbro.core.types import AudioTrack
 
-MERGE_WINDOW_S = 0.2
+HOP_S = 0.04
+GROUP_WINDOW_S = 0.25
 _EPS = 1e-12
 
 
@@ -25,14 +24,14 @@ def _hop_times(track: AudioTrack, hop: float, count: int) -> np.ndarray:
     return track.start + (np.arange(count) + 0.5) * hop
 
 
-def rms_track(track: AudioTrack, hop: float = 0.04) -> tuple[np.ndarray, np.ndarray]:
+def rms_track(track: AudioTrack, hop: float = HOP_S) -> tuple[np.ndarray, np.ndarray]:
     """Return (absolute times, RMS) of non-overlapping hops of hop seconds."""
     blocks = _hop_blocks(track, hop)
     rms = np.sqrt(np.mean(blocks * blocks, axis=1))
     return _hop_times(track, hop, rms.size), rms
 
 
-def band_ratio(track: AudioTrack, lo: float, hi: float, hop: float = 0.04) -> tuple[np.ndarray, np.ndarray]:
+def band_ratio(track: AudioTrack, lo: float, hi: float, hop: float = HOP_S) -> tuple[np.ndarray, np.ndarray]:
     """Return (absolute times, ratio) where ratio is the share of energy in [lo, hi] Hz per hop.
 
     Each hop is Hann-windowed before the FFT. Silent hops give 0.
@@ -48,39 +47,57 @@ def band_ratio(track: AudioTrack, lo: float, hi: float, hop: float = 0.04) -> tu
     return _hop_times(track, hop, blocks.shape[0]), ratio
 
 
-def _keep_strongest(times: np.ndarray, strengths: np.ndarray) -> list[tuple[float, float]]:
-    """Greedily keep the strongest hits so that kept hits are >= MERGE_WINDOW_S apart."""
-    taken: list[float] = []
-    kept: list[int] = []
-    for index in np.argsort(-strengths, kind="stable"):
-        moment = float(times[index])
-        pos = bisect.bisect_left(taken, moment)
-        left_ok = pos == 0 or moment - taken[pos - 1] >= MERGE_WINDOW_S
-        right_ok = pos == len(taken) or taken[pos] - moment >= MERGE_WINDOW_S
-        if left_ok and right_ok:
-            bisect.insort(taken, moment)
-            kept.append(int(index))
-    kept.sort(key=lambda idx: float(times[idx]))
-    return [(float(times[idx]), float(strengths[idx])) for idx in kept]
+def _lookback_mean(rms: np.ndarray, hop: float, lookback: float) -> np.ndarray:
+    """Mean RMS of the lookback seconds of hops before each hop; hops before the start count as 0."""
+    span = max(1, int(round(lookback / hop)))
+    padded = np.concatenate((np.zeros(span), rms))
+    cumulative = np.concatenate(([0.0], np.cumsum(padded)))
+    index = np.arange(rms.size)
+    return (cumulative[index + span] - cumulative[index]) / span
 
 
-def loud_jumps(track: AudioTrack | None, ratio: float = 3.0, floor: float = 0.02) -> list[tuple[float, float]]:
-    """Return (time, rms / median) for sudden loudness rises.
+def _group_onsets(times: np.ndarray, ratios: np.ndarray) -> list[tuple[float, float]]:
+    """Group qualifying hops that follow each other within GROUP_WINDOW_S.
 
-    A hop is a jump when its RMS exceeds max(ratio * median, floor) and is greater
-    than the previous hop's RMS (the first hop counts as rising from silence).
-    Hits closer than 0.2 s are merged, keeping the strongest. None gives [].
+    Each group returns (time of its earliest hop, maximum ratio in the group).
+    """
+    groups: list[tuple[float, float]] = []
+    last_time: float | None = None
+    for moment, strength in zip(times, ratios):
+        moment_f = float(moment)
+        strength_f = float(strength)
+        if last_time is None or moment_f - last_time > GROUP_WINDOW_S:
+            groups.append((moment_f, strength_f))
+        else:
+            start, best = groups[-1]
+            groups[-1] = (start, max(best, strength_f))
+        last_time = moment_f
+    return groups
+
+
+def loud_jumps(
+    track: AudioTrack | None,
+    ratio: float = 3.0,
+    floor: float = 0.02,
+    rise: float = 1.8,
+    lookback: float = 0.12,
+) -> list[tuple[float, float]]:
+    """Return onset hits as (time, rms / median) for sudden loudness rises.
+
+    A hop qualifies when rms > max(ratio * median, floor) and rms > rise * mean RMS of the
+    previous `lookback` seconds of hops (hops before the start count as 0). Qualifying hops
+    within 0.25 s form one group, reported at its earliest hop with the group's maximum ratio.
+    A sustained loud tone therefore yields a single hit at its start. None gives [].
     """
     if track is None:
         return []
-    times, rms = rms_track(track)
+    times, rms = rms_track(track, HOP_S)
     if rms.size == 0:
         return []
     median = float(np.median(rms))
     threshold = max(ratio * median, floor)
-    previous = np.concatenate(([0.0], rms[:-1]))
-    hits = np.flatnonzero((rms > threshold) & (rms > previous))
+    history = _lookback_mean(rms, HOP_S, lookback)
+    hits = np.flatnonzero((rms > threshold) & (rms > rise * history))
     if hits.size == 0:
         return []
-    strengths = rms[hits] / max(median, _EPS)
-    return _keep_strongest(times[hits], strengths)
+    return _group_onsets(times[hits], rms[hits] / max(median, _EPS))
