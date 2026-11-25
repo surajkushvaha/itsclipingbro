@@ -163,6 +163,29 @@ class MotionChannelTests(unittest.TestCase):
         self.assertGreater(columns[-1], columns[0])
         self.assertTrue(all(b >= a for a, b in zip(columns, columns[1:])))
 
+    def test_motion_sits_on_current_position_not_previous(self) -> None:
+        """Backward flow lights where the square IS now, not where it WAS.
+
+        The square is 40 px and jumps 20 px per frame, so its current and previous centres lie
+        in different cells. Flow saturates across several cells, so the argmax cell is a tie
+        artefact; the column-profile centroid of the motion map is the stable measure.
+        """
+        size, top, jump, count = 40, 80, 20, 12
+        frames = dark_noise(count)
+        starts = [20 + jump * index for index in range(count)]
+        for index, x in enumerate(starts):
+            frames[index, top : top + size, x : x + size] = 220
+        channels = run_channels(make_context(frames), ["hud", "motion"])
+        column_centres = (np.arange(8) + 0.5) / 8
+        for index in range(2, count):
+            profile = channels["motion"][index].sum(axis=0)
+            centroid = float((profile * column_centres).sum() / profile.sum())
+            current = (starts[index] + size / 2) / WIDTH
+            previous = (starts[index - 1] + size / 2) / WIDTH
+            with self.subTest(frame=index):
+                self.assertLess(abs(centroid - current), 0.05, f"centroid {centroid:.3f} vs current {current:.3f}")
+                self.assertLess(abs(centroid - current), abs(centroid - previous))
+
     def test_hud_cells_are_masked_and_moving_area_is_not_hud(self) -> None:
         """Static checkerboard cells are HUD with zero motion; the moving area is not HUD."""
         frames = moving_square_frames(24)
