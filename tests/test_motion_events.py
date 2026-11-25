@@ -149,6 +149,25 @@ def scream_scene() -> tuple[np.ndarray, AudioTrack]:
     return frames, AudioTrack(samples=samples.astype(np.float32), sr=SR, start=0.0)
 
 
+def speech_like_bed(seconds: float) -> np.ndarray:
+    """A 300 Hz + 2.5 kHz mixture amplitude-modulated by a 4 Hz syllable envelope (no loudness peaks)."""
+    times = np.arange(int(seconds * SR)) / SR
+    envelope = 0.6 + 0.4 * np.sin(2 * np.pi * 4.0 * times)
+    mixture = np.sin(2 * np.pi * 300 * times) + 0.5 * np.sin(2 * np.pi * 2500 * times)
+    return 0.1 * envelope * mixture
+
+
+def burst_on_speech(burst_s: float, loud: float = 4.0) -> tuple[np.ndarray, AudioTrack, float]:
+    """6 s of speech-like bed with a 3 kHz burst at 2.0 s, loud times the bed RMS; returns the bed RMS too."""
+    samples = speech_like_bed(6.0)
+    bed_rms = float(np.sqrt(np.mean(samples * samples)))
+    start = int(2.0 * SR)
+    times = np.arange(int(burst_s * SR)) / SR
+    samples[start : start + times.size] += loud * bed_rms * np.sqrt(2) * np.sin(2 * np.pi * 3000 * times)
+    frames = noisy_dark_frames(36)
+    return frames, AudioTrack(samples=samples.astype(np.float32), sr=SR, start=0.0), bed_rms
+
+
 class TestCombine(unittest.TestCase):
     """Weighted combination of channel maps."""
 
@@ -309,6 +328,69 @@ class TestScream(unittest.TestCase):
         frames, audio = scream_scene()
         found = run_pipeline(make_context(frames, audio=audio, faces=None), ["scream"])
         self.assertEqual(of_kind(found, "scream"), [])
+
+    def test_speech_like_audio_with_face_is_not_a_scream(self) -> None:
+        """Steady speech-like audio with a face on screen gives no scream at all."""
+        samples = speech_like_bed(6.0)
+        frames = noisy_dark_frames(36)
+        audio = AudioTrack(samples=samples.astype(np.float32), sr=SR, start=0.0)
+        face = FakeFaceDetector(Box(x=0.4, y=0.4, w=0.2, h=0.2, score=0.9))
+        found = run_pipeline(make_context(frames, audio=audio, faces=face), ["scream"])
+        self.assertEqual(of_kind(found, "scream"), [])
+
+    def test_loud_sustained_burst_on_speech_is_one_strong_scream(self) -> None:
+        """A 0.5 s, 4x RMS, 3 kHz burst on the speech bed with a face gives exactly one strong scream."""
+        frames, audio, _ = burst_on_speech(0.5)
+        face = FakeFaceDetector(Box(x=0.4, y=0.4, w=0.2, h=0.2, score=0.9))
+        found = run_pipeline(make_context(frames, audio=audio, faces=face), ["scream"])
+        screams = of_kind(found, "scream")
+        self.assertEqual(len(screams), 1, screams)
+        self.assertLessEqual(abs(screams[0].t - 2.25), 0.3)
+        self.assertGreater(screams[0].strength, 0.9)
+        assert_valid_events(self, found)
+
+    def test_burst_shorter_than_min_hops_is_not_a_scream(self) -> None:
+        """A 0.1 s burst is shorter than 5 hops (0.2 s), so no scream is reported."""
+        frames, audio, _ = burst_on_speech(0.1)
+        face = FakeFaceDetector(Box(x=0.4, y=0.4, w=0.2, h=0.2, score=0.9))
+        found = run_pipeline(make_context(frames, audio=audio, faces=face), ["scream"])
+        self.assertEqual(of_kind(found, "scream"), [])
+
+    def test_min_strength_threshold_drops_weaker_events(self) -> None:
+        """A min_strength above the scream's strength removes it, whatever the detector default."""
+        frames, audio, _ = burst_on_speech(0.5)
+        face = FakeFaceDetector(Box(x=0.4, y=0.4, w=0.2, h=0.2, score=0.9))
+        overrides = {"scream": {"min_strength": 1.01}}
+        config = MotionConfig(fps=FPS, width=SIZE, grid=GRID, face_every=1, thresholds=overrides)
+        found = run_pipeline(make_context(frames, audio=audio, faces=face, config=config), ["scream"])
+        self.assertEqual(of_kind(found, "scream"), [])
+
+
+class TestMinStrength(unittest.TestCase):
+    """The generic strength floor uses the detector's MIN_STRENGTH unless a threshold overrides it."""
+
+    class WeakDetector:
+        """Stub detector with a class-level floor of 0.5."""
+
+        kind = "weak"
+        MIN_STRENGTH = 0.5
+
+    def test_class_floor_drops_weak_events(self) -> None:
+        """Events below the class MIN_STRENGTH are dropped; equal strength is kept."""
+        ctx = make_context(noisy_dark_frames(4))
+        events = [
+            Event(t=0.0, kind="weak", strength=0.2, x=0.5, y=0.5),
+            Event(t=0.5, kind="weak", strength=0.5, x=0.5, y=0.5),
+        ]
+        kept = events_module._above_min_strength(ctx, self.WeakDetector(), events)
+        self.assertEqual([event.t for event in kept], [0.5])
+
+    def test_threshold_overrides_class_floor(self) -> None:
+        """A configured min_strength replaces the class default."""
+        config = MotionConfig(fps=FPS, width=SIZE, grid=GRID, thresholds={"weak": {"min_strength": 0.1}})
+        ctx = make_context(noisy_dark_frames(4), config=config)
+        events = [Event(t=0.0, kind="weak", strength=0.2, x=0.5, y=0.5)]
+        self.assertEqual(len(events_module._above_min_strength(ctx, self.WeakDetector(), events)), 1)
 
 
 class TestDedupe(unittest.TestCase):

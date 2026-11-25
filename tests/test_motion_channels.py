@@ -80,6 +80,12 @@ def moving_square_frames(count: int) -> np.ndarray:
     return frames
 
 
+def _moving_noise(count: int, seed: int = 3) -> np.ndarray:
+    """Fresh random noise on every frame: a busy background with no static pixels."""
+    rng = np.random.default_rng(seed)
+    return rng.integers(0, 90, size=(count, HEIGHT, WIDTH, 3), dtype=np.uint8)
+
+
 def checkerboard(height: int, width: int, cell: int = 8) -> np.ndarray:
     """A high-contrast black and white checkerboard with cell-pixel squares."""
     yy, xx = np.mgrid[0:height, 0:width]
@@ -240,10 +246,14 @@ class SmokeChannelTests(unittest.TestCase):
         return cell_slices((HEIGHT, WIDTH), (8, 8))[self.CELL[0]][self.CELL[1]]
 
     def test_blur_after_flash_scores_in_gate(self) -> None:
-        """A desaturated, blurred cell after a flash gets smoke > 0."""
+        """A desaturated, blurred cell after a flash gets smoke > 0.
+
+        The flash is confined to the test cell: a full-frame one-frame flash is itself a scene cut
+        and would (correctly) be ignored by the smoke gate and reset the baseline.
+        """
         frames = _colour_texture(24)
-        frames[3] = 255
         ys, xs = self._cell_slices()
+        frames[3, ys, xs] = 255
         _blur_cell(frames, 8, ys, xs)
         channels = run_channels(make_context(frames), ["flash", "smoke"])
         smoke = channels["smoke"]
@@ -256,6 +266,52 @@ class SmokeChannelTests(unittest.TestCase):
         _blur_cell(frames, 8, ys, xs)
         channels = run_channels(make_context(frames), ["flash", "smoke"])
         self.assertTrue(np.all(channels["smoke"] == 0.0))
+
+    def test_hard_cut_with_flash_to_blurred_grey_is_not_smoke(self) -> None:
+        """A sharp saturated scene cut to a blurred grey scene, with a flash on the cut, gives no smoke at all."""
+        frames = _colour_texture(24)
+        frames[10] = 255
+        frames[11:] = 110
+        channels = run_channels(make_context(frames), ["flash", "smoke"])
+        self.assertTrue(np.all(channels["smoke"] == 0.0))
+
+    def test_flash_on_a_cut_does_not_open_the_gate(self) -> None:
+        """A cut flash must not open the 2 s gate: a later blur in the new scene stays at zero.
+
+        cut_reset_s is 0 so only the gate can hide the blur at frame 20 (the reset ends at frame 17).
+        """
+        frames = _colour_texture(24)
+        frames[10] = 255
+        frames[11:] = _colour_texture(24, seed=9)[11:]
+        ys, xs = self._cell_slices()
+        _blur_cell(frames, 20, ys, xs)
+        config = MotionConfig(thresholds={"smoke": {"cut_reset_s": 0.0}})
+        channels = run_channels(make_context(frames, config=config), ["flash", "smoke"])
+        self.assertTrue(np.all(channels["smoke"] == 0.0))
+
+
+class HudPersistenceTests(unittest.TestCase):
+    """Overlays are found per pixel: static and persistently edged, even when only a small logo is static."""
+
+    def test_static_logo_over_moving_noise_marks_only_its_cell(self) -> None:
+        """A static white LOGO in the bottom-right cell is HUD there; its neighbours are not."""
+        frames = _moving_noise(24)
+        for frame in frames:
+            cv2.putText(frame, "LOGO", (282, 171), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+        ctx = make_context(frames)
+        run_channels(ctx, ["hud"])
+        hud = hud_mask(ctx)
+        self.assertTrue(hud[7, 7])
+        self.assertFalse(hud[7, 6])
+        self.assertFalse(hud[6, 7])
+        self.assertFalse(hud[6, 6])
+
+    def test_plain_static_dark_background_is_not_hud(self) -> None:
+        """A flat dark background is static but has no edges, so no cell is HUD."""
+        frames = np.full((24, HEIGHT, WIDTH, 3), 30, dtype=np.uint8)
+        ctx = make_context(frames)
+        run_channels(ctx, ["hud"])
+        self.assertFalse(hud_mask(ctx).any())
 
 
 class FaceChannelTests(unittest.TestCase):

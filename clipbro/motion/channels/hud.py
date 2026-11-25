@@ -31,9 +31,14 @@ def _static_pixels(gray: np.ndarray, std_max: float) -> np.ndarray:
 
 
 def _persistent_edges(gray: np.ndarray, edge_persist: float) -> np.ndarray:
-    """Bool [H, W]: pixels that are Canny edges on at least edge_persist of the frames."""
+    """Bool [H, W]: pixels within one pixel of a Canny edge present on at least edge_persist of the frames.
+
+    The one-pixel dilation is needed because the edge of a thin glyph over moving footage is
+    drawn on the moving side of its outline, while the glyph's own (static) pixels sit inside it.
+    """
     edges = np.stack([cv2.Canny(frame, CANNY_LOW, CANNY_HIGH) for frame in gray]) > 0
-    return edges.mean(axis=0) >= edge_persist
+    persistent = (edges.mean(axis=0) >= edge_persist).astype(np.uint8)
+    return cv2.dilate(persistent, np.ones((3, 3), dtype=np.uint8)) > 0
 
 
 def _compute_mask(ctx: AnalysisContext) -> np.ndarray:
