@@ -8,7 +8,7 @@ from clipbro.core.context import AnalysisContext
 from clipbro.core.registry import register
 from clipbro.core.types import Event
 from clipbro.motion.audio_features import loud_jumps
-from clipbro.motion.events import hud_free, peak_location, runs_of
+from clipbro.motion.events import frame_peak, hud_free, peak_location, runs_of
 
 DEFAULTS: dict[str, float] = {"flash_min": 0.5, "window": 0.3}
 
@@ -25,7 +25,7 @@ def _matched_ratios(times: np.ndarray, jumps: list[tuple[float, float]], window:
 
 
 def _boom_event(ctx: AnalysisContext, index: int, flash_level: float, ratio: float) -> Event:
-    """Build the boom event for one peak frame."""
+    """Build the boom event for one peak frame; x/y is the strongest non-HUD flash cell."""
     strength = (flash_level + min(1.0, ratio / SATURATION_RATIO)) / 2.0
     x, y = peak_location(hud_free(ctx, "flash")[index], ctx.grid)
     return Event(
@@ -51,8 +51,7 @@ class BoomDetector:
             return []
         flash_min = ctx.threshold("boom", "flash_min", DEFAULTS["flash_min"])
         window = ctx.threshold("boom", "window", DEFAULTS["window"])
-        flash = np.asarray(ctx.saliency.channel("flash"), dtype=np.float64).shape and None
-        flash_max = self._flash_levels(ctx)
+        flash_max = frame_peak(ctx, "flash").astype(np.float64)
         ratios = _matched_ratios(ctx.frames.times, jumps, window)
         qualifying = (flash_max >= flash_min) & (ratios > 0.0)
         events: list[Event] = []
@@ -60,7 +59,3 @@ class BoomDetector:
             peak = first + int(np.argmax(flash_max[first : last + 1]))
             events.append(_boom_event(ctx, peak, float(flash_max[peak]), float(ratios[peak])))
         return events
-
-    def _flash_levels(self, ctx: AnalysisContext) -> np.ndarray:
-        """Per-frame flash maximum over non-HUD cells, as float64."""
-        return frame_peak_float(ctx)
