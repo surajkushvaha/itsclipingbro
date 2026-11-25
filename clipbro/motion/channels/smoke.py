@@ -1,8 +1,8 @@
 """Smoke channel: desaturated, blurred cells that appear shortly after a flash or audio burst.
 
-Scene cuts are not smoke. A cut frame (full-frame change or a cut time) resets the rolling
-baseline, so frames before a cut never count as the "normal" look of frames after it, and
-the smoke score stays at zero for a short time after the cut.
+Scene cuts reset the smoke baseline, so frames before a cut never count as the "normal" look
+of frames after it. A cut that is part of a returning flash burst (an explosion, brightness back
+to where it was) is not a scene change and is ignored, so boom -> smoke still works.
 """
 
 from __future__ import annotations
@@ -13,8 +13,11 @@ import numpy as np
 from clipbro.core.context import AnalysisContext
 from clipbro.core.registry import register
 from clipbro.motion.audio_features import loud_jumps
+from clipbro.motion.channels.flash import DEFAULTS as FLASH_DEFAULTS
 from clipbro.motion.channels.hud import hud_mask
-from clipbro.motion.grid import cell_mean, stats_frames, stats_gray
+from clipbro.motion.cuts import cut_frames
+from clipbro.motion.events import runs_of
+from clipbro.motion.grid import cell_mean, stats_frames, stats_gray, to_gray
 
 DEFAULTS: dict[str, float] = {
     "sat_drop": 0.25,
@@ -23,8 +26,8 @@ DEFAULTS: dict[str, float] = {
     "trigger": 0.5,
     "lum_min": 60.0,
     "lum_max": 190.0,
-    "cut_diff": 30.0,
     "cut_reset_s": 1.0,
+    "return_frac": 0.2,
 }
 
 
@@ -39,23 +42,6 @@ def _cell_stats(
     saturation = cell_mean(sat.astype(np.float32), grid)
     luminance = cell_mean(gray.astype(np.float32), grid)
     return saturation, sharpness, luminance
-
-
-def _cut_frames(ctx: AnalysisContext, gray: np.ndarray, cut_diff: float) -> np.ndarray:
-    """Bool [N] marking cut frames: full-frame mean absdiff to the previous frame > cut_diff,
-    or a time in ctx.cuts lying in (t[i-1], t[i]]."""
-    count = gray.shape[0]
-    cuts = np.zeros(count, dtype=bool)
-    if count < 2:
-        return cuts
-    flat = gray.reshape(count, -1).astype(np.float32)
-    cuts[1:] = np.abs(np.diff(flat, axis=0)).mean(axis=1) > cut_diff
-    times = ctx.frames.times
-    for moment in ctx.cuts:
-        index = int(np.searchsorted(times, moment, side="left"))
-        if 1 <= index < count:
-            cuts[index] = True
-    return cuts
 
 
 def _segment_starts(cuts: np.ndarray) -> np.ndarray:
@@ -129,6 +115,60 @@ def _audio_jump_times(ctx: AnalysisContext) -> np.ndarray:
     return np.asarray([moment for moment, _ in loud_jumps(ctx.audio)], dtype=np.float64)
 
 
+def _luminance(ctx: AnalysisContext) -> np.ndarray:
+    """Full-frame mean luminance per sampled frame, float64 [N], from the shared full-res gray."""
+    gray = ctx.memo("gray", lambda: to_gray(ctx.frames.frames))
+    return gray.reshape(gray.shape[0], -1).mean(axis=1, dtype=np.float64)
+
+
+def _returning_bursts(
+    flash_max: np.ndarray,
+    levels: np.ndarray,
+    trigger: float,
+    horizon: int,
+    return_frac: float,
+) -> np.ndarray:
+    """Bool [N] marking frames of flash bursts whose brightness returns to the pre-burst level.
+
+    A run of flash frames (flash_max >= trigger, first..last) is a returning burst when the level
+    `horizon` frames after its last frame is within return_frac of the rise above the level just
+    before it. Frames first-1 .. last+horizon are marked; a scene cut there is an explosion, not
+    a scene change. A cut to a new scene at another brightness is not marked.
+    """
+    count = flash_max.shape[0]
+    mask = np.zeros(count, dtype=bool)
+    for first, last in runs_of(flash_max >= trigger):
+        if first < 1:
+            continue
+        before = float(levels[first - 1])
+        rise = float(levels[first : last + 1].max()) - before
+        after = min(last + horizon, count - 1)
+        if rise > 0 and abs(float(levels[after]) - before) <= return_frac * rise:
+            mask[first - 1 : after + 1] = True
+    return mask
+
+
+def _effective_cuts(ctx: AnalysisContext, flash_max: np.ndarray, thresholds: dict[str, float]) -> np.ndarray:
+    """Shared scene cuts minus the cuts that belong to a returning flash burst."""
+    horizon = int(round(ctx.threshold("flash", "return_frames", FLASH_DEFAULTS["return_frames"])))
+    returning = _returning_bursts(
+        flash_max,
+        _luminance(ctx),
+        thresholds["trigger"],
+        horizon,
+        thresholds["return_frac"],
+    )
+    return cut_frames(ctx) & ~returning
+
+
+def _non_hud_flash_max(ctx: AnalysisContext) -> np.ndarray:
+    """Per-frame maximum of the flash channel over the non-HUD cells, float64 [N]."""
+    count, rows, cols = ctx.frames.n, *ctx.grid
+    flash = ctx.channels.get("flash", np.zeros((count, rows, cols), dtype=np.float32))
+    non_hud = ~hud_mask(ctx)
+    return np.where(non_hud[None, :, :], flash, 0.0).reshape(count, -1).max(axis=1).astype(np.float64)
+
+
 @register("channel", "smoke")
 class SmokeChannel:
     """Smoke-like desaturation and blur per cell, only inside a flash or audio gate and not near a cut."""
@@ -146,13 +186,11 @@ class SmokeChannel:
         window = max(1, int(round(ctx.frames.fps)))
         reset_span = window + int(round(thresholds["cut_reset_s"] * ctx.frames.fps))
         gray = stats_gray(ctx)
-        cuts = _cut_frames(ctx, gray, thresholds["cut_diff"])
+        flash_max = _non_hud_flash_max(ctx)
+        cuts = _effective_cuts(ctx, flash_max, thresholds)
         saturation, sharpness, luminance = _cell_stats(stats_frames(ctx), gray, ctx.grid)
         scores = _smoke_scores(saturation, sharpness, luminance, window, _segment_starts(cuts), thresholds)
         scores = np.where(_reset_mask(cuts, reset_span)[:, None, None], 0.0, scores)
-        flash = ctx.channels.get("flash", np.zeros((count, rows, cols), dtype=np.float32))
-        non_hud = ~hud_mask(ctx)
-        flash_max = np.where(non_hud[None, :, :], flash, 0.0).reshape(count, -1).max(axis=1)
         flash_max = np.where(cuts, 0.0, flash_max)
         gate = _gate_open(
             ctx.frames.times,

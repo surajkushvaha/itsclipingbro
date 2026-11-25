@@ -275,6 +275,16 @@ class SmokeChannelTests(unittest.TestCase):
         channels = run_channels(make_context(frames), ["flash", "smoke"])
         self.assertTrue(np.all(channels["smoke"] == 0.0))
 
+    def test_full_frame_flash_burst_then_blur_is_smoke(self) -> None:
+        """A two-frame full-frame flash that returns to the same brightness (an explosion) does not
+        reset smoke: the cell that blurs and greys afterwards still scores smoke > 0."""
+        frames = _colour_texture(30)
+        frames[10:12] = 255
+        ys, xs = self._cell_slices()
+        _blur_cell(frames, 16, ys, xs)
+        channels = run_channels(make_context(frames), ["flash", "smoke"])
+        self.assertGreater(float(channels["smoke"][16:24, self.CELL[0], self.CELL[1]].max()), 0.5)
+
     def test_flash_on_a_cut_does_not_open_the_gate(self) -> None:
         """A cut flash must not open the 2 s gate: a later blur in the new scene stays at zero.
 
@@ -282,7 +292,7 @@ class SmokeChannelTests(unittest.TestCase):
         """
         frames = _colour_texture(24)
         frames[10] = 255
-        frames[11:] = _colour_texture(24, seed=9)[11:]
+        frames[11:] = (_colour_texture(24, seed=9)[11:] * 0.6).astype(np.uint8)
         ys, xs = self._cell_slices()
         _blur_cell(frames, 20, ys, xs)
         config = MotionConfig(thresholds={"smoke": {"cut_reset_s": 0.0}})

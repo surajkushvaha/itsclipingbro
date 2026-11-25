@@ -25,20 +25,35 @@ def _sampled_gray(ctx: AnalysisContext) -> np.ndarray:
     return ctx.memo("gray", lambda: to_gray(ctx.frames.frames))
 
 
-def _static_pixels(gray: np.ndarray, std_max: float) -> np.ndarray:
-    """Bool [H, W]: pixels whose temporal standard deviation is below std_max."""
-    return gray.astype(np.float32).std(axis=0) < std_max
+def _pixel_stats(gray: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Per-pixel temporal std (float64 [H, W]) and Canny edge hit count (int32 [H, W]).
+
+    Streams over the frames with running sums, so no [N, H, W] float array is ever built.
+    """
+    count = gray.shape[0]
+    total = np.zeros(gray.shape[1:], dtype=np.float64)
+    squares = np.zeros(gray.shape[1:], dtype=np.float64)
+    hits = np.zeros(gray.shape[1:], dtype=np.int32)
+    for frame in gray:
+        values = frame.astype(np.float64)
+        total += values
+        squares += values * values
+        hits += cv2.Canny(frame, CANNY_LOW, CANNY_HIGH) > 0
+    mean = total / count
+    std = np.sqrt(np.maximum(squares / count - mean * mean, 0.0))
+    return std, hits
 
 
-def _persistent_edges(gray: np.ndarray, edge_persist: float) -> np.ndarray:
-    """Bool [H, W]: pixels within one pixel of a Canny edge present on at least edge_persist of the frames.
+def _overlay_pixels(gray: np.ndarray, std_max: float, edge_persist: float) -> np.ndarray:
+    """Bool [H, W]: static pixels that lie within one pixel of a persistent Canny edge.
 
     The one-pixel dilation is needed because the edge of a thin glyph over moving footage is
     drawn on the moving side of its outline, while the glyph's own (static) pixels sit inside it.
     """
-    edges = np.stack([cv2.Canny(frame, CANNY_LOW, CANNY_HIGH) for frame in gray]) > 0
-    persistent = (edges.mean(axis=0) >= edge_persist).astype(np.uint8)
-    return cv2.dilate(persistent, np.ones((3, 3), dtype=np.uint8)) > 0
+    std, hits = _pixel_stats(gray)
+    persistent = (hits / gray.shape[0] >= edge_persist).astype(np.uint8)
+    persistent = cv2.dilate(persistent, np.ones((3, 3), dtype=np.uint8)) > 0
+    return (std < std_max) & persistent
 
 
 def _compute_mask(ctx: AnalysisContext) -> np.ndarray:
@@ -51,7 +66,7 @@ def _compute_mask(ctx: AnalysisContext) -> np.ndarray:
     std_max = ctx.threshold("hud", "std_max", DEFAULTS["std_max"])
     edge_persist = ctx.threshold("hud", "edge_persist", DEFAULTS["edge_persist"])
     cover = ctx.threshold("hud", "cover", DEFAULTS["cover"])
-    overlay = _static_pixels(gray, std_max) & _persistent_edges(gray, edge_persist)
+    overlay = _overlay_pixels(gray, std_max, edge_persist)
     fraction = cell_mean(overlay.astype(np.float32), ctx.grid)
     return fraction >= cover
 

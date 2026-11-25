@@ -8,9 +8,10 @@ import numpy as np
 from clipbro.core.context import AnalysisContext
 from clipbro.core.registry import register
 from clipbro.motion.channels.hud import hud_mask
+from clipbro.motion.cuts import cut_frames
 from clipbro.motion.grid import cell_slices, to_gray
 
-DEFAULTS: dict[str, float] = {"scale_px": 2.0, "cut_diff": 38.0, "flow_scale": 0.5}
+DEFAULTS: dict[str, float] = {"scale_px": 2.0, "flow_scale": 0.5}
 
 REFERENCE_WIDTH = 160
 
@@ -59,23 +60,6 @@ def _cell_p90(magnitude: np.ndarray, plan: tuple[np.ndarray, list[tuple[int, int
     return out.reshape(grid)
 
 
-def _is_cut(
-    index: int,
-    gray: np.ndarray,
-    times: np.ndarray,
-    cut_times: np.ndarray,
-    cut_diff: float,
-) -> bool:
-    """Return True when frame index is a scene cut relative to index - 1."""
-    diff = float(np.mean(np.abs(gray[index].astype(np.float32) - gray[index - 1].astype(np.float32))))
-    if diff > cut_diff:
-        return True
-    if cut_times.size == 0:
-        return False
-    lo, hi = times[index - 1], times[index]
-    return bool(np.any((cut_times > lo) & (cut_times <= hi)))
-
-
 def _downscale(gray: np.ndarray, flow_scale: float) -> np.ndarray:
     """Resize every gray frame by flow_scale with area averaging, for cheaper optical flow."""
     return np.stack(
@@ -84,25 +68,22 @@ def _downscale(gray: np.ndarray, flow_scale: float) -> np.ndarray:
 
 
 def _flow_cells(
-    gray: np.ndarray,
     small: np.ndarray,
-    times: np.ndarray,
-    cut_times: np.ndarray,
+    cuts: np.ndarray,
     grid: tuple[int, int],
     scale: float,
-    cut_diff: float,
     flow_scale: float,
 ) -> np.ndarray:
     """Return unclipped per-cell flow for every frame; frame 0 copies frame 1, cuts give 0.
 
     Flow is computed on the downscaled frames `small`; magnitudes are divided by flow_scale
-    so they stay in sampled-frame pixels. Cut detection uses the full-resolution `gray`.
+    so they stay in sampled-frame pixels. `cuts` is the shared bool [N] cut mask.
     """
-    count = gray.shape[0]
+    count = small.shape[0]
     plan = _p90_plan(small.shape[1:3], grid)
     out = np.zeros((count, grid[0], grid[1]), dtype=np.float64)
     for index in range(1, count):
-        if _is_cut(index, gray, times, cut_times, cut_diff):
+        if cuts[index]:
             continue
         magnitude = _flow_magnitude(small[index], small[index - 1]) / flow_scale
         out[index] = _cell_p90(magnitude, plan, grid) / scale
@@ -127,12 +108,8 @@ class MotionChannel:
         scale = ctx.threshold(
             "motion", "scale_px", DEFAULTS["scale_px"] * width / REFERENCE_WIDTH
         )
-        cut_diff = ctx.threshold("motion", "cut_diff", DEFAULTS["cut_diff"])
-        cut_times = np.asarray(ctx.cuts, dtype=np.float64)
         flow_scale = min(max(ctx.threshold("motion", "flow_scale", DEFAULTS["flow_scale"]), 1e-3), 1.0)
         small = _downscale(gray, flow_scale)
-        flow = _flow_cells(
-            gray, small, ctx.frames.times, cut_times, ctx.grid, max(scale, 1e-6), cut_diff, flow_scale
-        )
+        flow = _flow_cells(small, cut_frames(ctx), ctx.grid, max(scale, 1e-6), flow_scale)
         flow = np.where(hud_mask(ctx)[None, :, :], 0.0, flow)
         return np.clip(flow, 0.0, 1.0).astype(np.float32)
