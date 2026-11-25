@@ -70,7 +70,9 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("media", type=Path, help="path to the source video")
     parser.add_argument("start", type=float, help="range start in seconds")
     parser.add_argument("end", type=float, help="range end in seconds")
-    parser.add_argument("--out", type=Path, default=None, help="JPEG output path (default: <stem>_<start>_<end>_sheet.jpg)")
+    parser.add_argument(
+        "--out", type=Path, default=None, help="JPEG output path (default: <stem>_<start>_<end>_sheet.jpg)"
+    )
     parser.add_argument("--profile", default=None, help="motion config profile name")
     parser.add_argument("--cols", type=_positive_int, default=DEFAULT_COLS, help="tiles per row (default 5)")
     parser.add_argument("--data-dir", type=Path, default=Path("data"), help="cache directory (default ./data)")
@@ -243,7 +245,9 @@ def format_header(media: Path, rng: TimeRange, profile: str | None, events: list
     )
 
 
-def _header_lines(media: Path, rng: TimeRange, profile: str | None, timing: dict[str, float], events: list[Event]) -> list[str]:
+def _header_lines(
+    media: Path, rng: TimeRange, profile: str | None, timing: dict[str, float], events: list[Event]
+) -> list[str]:
     """Two text lines for the sheet header strip: identity and timing, then event counts per kind."""
     counts = Counter(event.kind for event in events)
     kinds = ", ".join(f"{kind} {count}" for kind, count in sorted(counts.items())) or "none"
@@ -282,7 +286,9 @@ def default_out_path(media: Path, rng: TimeRange) -> Path:
     return Path(f"{media.stem}_{rng.start:g}_{rng.end:g}_sheet.jpg")
 
 
-def build_sheet(analyzer: DebugAnalyzer, args: argparse.Namespace, rng: TimeRange) -> tuple[np.ndarray, Analysis, list[Event]]:
+def build_sheet(
+    analyzer: DebugAnalyzer, args: argparse.Namespace, rng: TimeRange
+) -> tuple[np.ndarray, Analysis, list[Event]]:
     """Run a fresh analysis, sample one frame per second and render the tiles into a sheet."""
     analysis = analyzer.analyze(args.media, rng, use_cache=False)
     if analysis.saliency is None:
