@@ -84,8 +84,20 @@ def runs_of(mask: np.ndarray) -> list[tuple[int, int]]:
     return [(int(start), int(end) - 1) for start, end in zip(edges[::2], edges[1::2])]
 
 
+def _above_min_strength(ctx: AnalysisContext, detector: object, events: list[Event]) -> list[Event]:
+    """Drop events weaker than the detector's minimum strength.
+
+    The floor is the `min_strength` threshold of the detector's kind, defaulting to its
+    MIN_STRENGTH class attribute (0.0 when the detector sets none).
+    """
+    kind = str(getattr(detector, "kind"))
+    default = float(getattr(detector, "MIN_STRENGTH", 0.0))
+    floor = ctx.threshold(kind, "min_strength", default)
+    return [event for event in events if event.strength >= floor]
+
+
 def run_detectors(ctx: AnalysisContext, registry: Registry = REGISTRY) -> list[Event]:
-    """Run the configured detectors in config order, dedupe their events and sort them by time.
+    """Run the configured detectors in config order, drop weak events, dedupe and sort by time.
 
     ctx.saliency must already be set by saliency.run_channels.
     """
@@ -94,7 +106,7 @@ def run_detectors(ctx: AnalysisContext, registry: Registry = REGISTRY) -> list[E
     found: list[Event] = []
     for name in ctx.config.detectors:
         detector = registry.create("detector", name)
-        found.extend(detector.detect(ctx))
+        found.extend(_above_min_strength(ctx, detector, detector.detect(ctx)))
     merged = dedupe(found, ctx.config.dedupe_window)
     return sorted(merged, key=lambda event: event.t)
 

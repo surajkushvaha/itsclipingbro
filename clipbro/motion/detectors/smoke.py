@@ -32,6 +32,7 @@ class SmokeDetector:
     """Reports each run of frames whose smoke level stays above `min` for at least `min_s` seconds."""
 
     kind = "smoke"
+    MIN_STRENGTH = 0.35
 
     def detect(self, ctx: AnalysisContext) -> list[Event]:
         """Return one smoke event per qualifying run of frames."""

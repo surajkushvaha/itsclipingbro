@@ -1,4 +1,9 @@
-"""HUD channel: static screen overlays found from low temporal variance plus edge density."""
+"""HUD channel: static overlays such as watermarks, logos and panels, found per pixel.
+
+A pixel is overlay-like when it is static (low temporal std) and carries a persistent Canny
+edge (an edge on most frames). A cell is HUD when enough of its pixels are overlay-like, so a
+small logo over moving footage still marks its own cell.
+"""
 
 from __future__ import annotations
 
@@ -7,38 +12,43 @@ import numpy as np
 
 from clipbro.core.context import AnalysisContext
 from clipbro.core.registry import register
-from clipbro.motion.grid import cell_mean, stats_gray
+from clipbro.motion.grid import cell_mean, to_gray
 
-DEFAULTS: dict[str, float] = {"std_max": 4.0, "edge_min": 0.06, "min_frames": 6}
+DEFAULTS: dict[str, float] = {"std_max": 6.0, "edge_persist": 0.6, "cover": 0.04, "min_frames": 6}
 
 CANNY_LOW = 80
 CANNY_HIGH = 160
 
 
-def _temporal_std_cells(gray: np.ndarray, grid: tuple[int, int]) -> np.ndarray:
-    """Per-cell mean of the per-pixel temporal standard deviation of gray frames."""
-    pixel_std = gray.astype(np.float32).std(axis=0)
-    return cell_mean(pixel_std, grid)
+def _sampled_gray(ctx: AnalysisContext) -> np.ndarray:
+    """Luma uint8 [N, H, W] of the sampled frames (not the half-res stats), computed once per run."""
+    return ctx.memo("gray", lambda: to_gray(ctx.frames.frames))
 
 
-def _edge_fraction_cells(gray: np.ndarray, grid: tuple[int, int]) -> np.ndarray:
-    """Per-cell mean fraction of Canny edge pixels, averaged over all frames."""
-    edges = np.stack([cv2.Canny(frame, CANNY_LOW, CANNY_HIGH) for frame in gray])
-    return cell_mean((edges > 0).astype(np.float32), grid).mean(axis=0)
+def _static_pixels(gray: np.ndarray, std_max: float) -> np.ndarray:
+    """Bool [H, W]: pixels whose temporal standard deviation is below std_max."""
+    return gray.astype(np.float32).std(axis=0) < std_max
+
+
+def _persistent_edges(gray: np.ndarray, edge_persist: float) -> np.ndarray:
+    """Bool [H, W]: pixels that are Canny edges on at least edge_persist of the frames."""
+    edges = np.stack([cv2.Canny(frame, CANNY_LOW, CANNY_HIGH) for frame in gray]) > 0
+    return edges.mean(axis=0) >= edge_persist
 
 
 def _compute_mask(ctx: AnalysisContext) -> np.ndarray:
     """Build the bool [rows, cols] HUD mask; all False when there are too few frames."""
-    gray = stats_gray(ctx)
+    gray = _sampled_gray(ctx)
     rows, cols = ctx.grid
     min_frames = ctx.threshold("hud", "min_frames", DEFAULTS["min_frames"])
     if gray.shape[0] < max(2.0, min_frames):
         return np.zeros((rows, cols), dtype=bool)
     std_max = ctx.threshold("hud", "std_max", DEFAULTS["std_max"])
-    edge_min = ctx.threshold("hud", "edge_min", DEFAULTS["edge_min"])
-    static = _temporal_std_cells(gray, ctx.grid) < std_max
-    detailed = _edge_fraction_cells(gray, ctx.grid) > edge_min
-    return static & detailed
+    edge_persist = ctx.threshold("hud", "edge_persist", DEFAULTS["edge_persist"])
+    cover = ctx.threshold("hud", "cover", DEFAULTS["cover"])
+    overlay = _static_pixels(gray, std_max) & _persistent_edges(gray, edge_persist)
+    fraction = cell_mean(overlay.astype(np.float32), ctx.grid)
+    return fraction >= cover
 
 
 def hud_mask(ctx: AnalysisContext) -> np.ndarray:
@@ -48,7 +58,7 @@ def hud_mask(ctx: AnalysisContext) -> np.ndarray:
 
 @register("channel", "hud")
 class HudChannel:
-    """Marks static overlay cells and broadcasts the 0/1 mask to every frame."""
+    """Marks overlay cells and broadcasts the 0/1 mask to every frame."""
 
     name = "hud"
     requires: tuple[str, ...] = ()
