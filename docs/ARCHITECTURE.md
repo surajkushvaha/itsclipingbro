@@ -253,7 +253,7 @@ Output float32 `[N, rows, cols]` in 0..1. Shared intermediates via `ctx.memo("gr
 | name | requires | algorithm (defaults in brackets) |
 |---|---|---|
 | `hud` | () | Static overlay cells: per-cell mean of per-pixel temporal std of gray < `std_max` [4.0] **and** mean Canny(80,160) edge fraction > `edge_min` [0.06]. Needs N >= `min_frames` [6] else none. Output = mask broadcast to N (1.0 / 0.0). Also `ctx.memo("hud_mask", ...)` bool [rows, cols]. |
-| `motion` | ("hud",) | Farneback flow on consecutive gray frames (pyr .5, levels 3, win 15, iters 3, poly_n 5, sigma 1.2). Per cell 90th percentile magnitude / `scale_px` [2.0 * width/160 px per frame], clip 0..1. Frame i is zeroed if mean absdiff(gray[i], gray[i-1]) > `cut_diff` [38] or a cut in `ctx.cuts` lies in (t[i-1], t[i]]. Frame 0 copies frame 1. HUD cells -> 0. |
+| `motion` | ("hud",) | Farneback flow on consecutive gray frames downscaled by `flow_scale` [0.5] (pyr .5, levels 3, win 15, iters 3, poly_n 5, sigma 1.2); magnitudes are divided by `flow_scale` so units stay sampled-frame px. Per cell 90th percentile magnitude / `scale_px` [2.0 * width/160 px per frame], clip 0..1. Frame i is zeroed if mean absdiff(gray[i], gray[i-1]) > `cut_diff` [38] or a cut in `ctx.cuts` lies in (t[i-1], t[i]]. Frame 0 copies frame 1. HUD cells -> 0. |
 | `flash` | () | Per-cell mean luminance L and orange fraction O (R>200, 90<G<190, B<90). Burst = L rises by >= `lum_jump` [35] in one step and within `return_frames` [3] falls back by >= half the rise. score = clip(rise / (2*lum_jump)) on burst frames; plus fire = clip(dO / `orange_jump` [0.12]) for rises in O. Max of both. |
 | `smoke` | ("flash",) | Per cell: saturation mean S and Laplacian variance V; baseline = mean of previous 1 s (round(fps) frames). sat_drop=(Sb-S)/max(Sb,1), sharp_drop=(Vb-V)/max(Vb,1). score = clip(min(sat_drop/`sat_drop` [0.25], sharp_drop/`sharp_drop` [0.4])) only where 60 <= L <= 190. **Gate:** frame counts only if some frame in the previous `gate_s` [2.0] s had flash max >= `trigger` [0.5] or an audio loud jump (audio_features.loud_jumps). |
 | `face` | () | If `ctx.faces` is None -> zeros. Run detector every `config.face_every` frames, hold result for skipped frames. Rasterise each Box: per cell, fraction of the cell covered by the box x score, summed, clip 1. |
@@ -265,8 +265,11 @@ Output float32 `[N, rows, cols]` in 0..1. Shared intermediates via `ctx.memo("gr
 ```python
 def rms_track(track: AudioTrack, hop: float = 0.04) -> tuple[np.ndarray, np.ndarray]          # (abs times, rms)
 def band_ratio(track: AudioTrack, lo: float, hi: float, hop: float = 0.04) -> tuple[np.ndarray, np.ndarray]
-def loud_jumps(track: AudioTrack | None, ratio: float = 3.0, floor: float = 0.02) -> list[tuple[float, float]]
-    # (time, rms/median) where rms > max(ratio*median, floor) and rising vs previous hop; merged within 0.2 s
+def loud_jumps(track: AudioTrack | None, ratio: float = 3.0, floor: float = 0.02,
+               rise: float = 1.8, lookback: float = 0.12) -> list[tuple[float, float]]
+    # ONSETS only: (time, rms/median) where rms > max(ratio*median, floor) AND
+    # rms > rise * mean(rms of the previous `lookback` s). Hits within 0.25 s merge to the EARLIEST
+    # (onset time), carrying the max ratio seen in that group. A sustained loud tone yields one hit at its start.
 ```
 
 ## 11. Detectors (`clipbro/motion/detectors/*.py`)
