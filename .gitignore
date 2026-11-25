@@ -1,0 +1,16 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Packaging
+*.egg-info/
+build/
+dist/
+
+# Local data and models
+data/
+models/*.onnx
+
+# Virtual environments
+.venv/
